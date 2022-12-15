@@ -1,61 +1,57 @@
 import sounddevice as sd
 import numpy as np
-
 import whisper
-
 import asyncio
-import queue
 import sys
 
 
 # SETTINGS
-MODEL_TYPE="base.en"
 # the model used for transcription. https://github.com/openai/whisper#available-models-and-languages
-LANGUAGE="English"
+MODEL_TYPE="tiny.en"
 # pre-set the language to avoid autodetection
-BLOCKSIZE=24678 
-# this is the base chunk size the audio is split into in samples. blocksize / 16000 = chunk length in seconds. 
-SILENCE_THRESHOLD=400
+LANGUAGE="English"
+# Sample rate
+SAMPLE_RATE = 16 * 10**3
+# this is the base chunk size the audio is split into in samples. blocksize / sample rate = chunk length in seconds. 
+BLOCKSIZE=24678
 # should be set to the lowest sample amplitude that the speech in the audio material has
+SILENCE_THRESHOLD=400
+# number of samples in one buffer that are allowed to be higher than threshold.
 SILENCE_RATIO=100
-# number of samples in one buffer that are allowed to be higher than threshold
-
-
-global_ndarray = None
-model = whisper.load_model(MODEL_TYPE)
 
 async def inputstream_generator():
 	"""Generator that yields blocks of input data as NumPy arrays."""
-	q_in = asyncio.Queue()
-	loop = asyncio.get_event_loop()
+	q_in = asyncio.Queue() # Infinite length queue
+	loop = asyncio.get_event_loop() # Get the running event loop
 
-	def callback(indata, frame_count, time_info, status):
+	def callback(indata: np.ndarray, frames: int, time, status: sd.CallbackFlags):
+		"""
+		indata: 2D array. But its inner arrays are all single element array.
+		"""
 		loop.call_soon_threadsafe(q_in.put_nowait, (indata.copy(), status))
 
-	stream = sd.InputStream(samplerate=16000, channels=1, dtype='int16', blocksize=BLOCKSIZE, callback=callback)
+	stream = sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype='int16', blocksize=BLOCKSIZE, callback=callback)
 	with stream:
 		while True:
 			indata, status = await q_in.get()
 			yield indata, status
-			
-		
-async def process_audio_buffer():
-	global global_ndarray
+
+async def process_audio_buffer(model):
+	global_ndarray = None
 	async for indata, status in inputstream_generator():
-		
+
 		indata_flattened = abs(indata.flatten())
-				
+
 		# discard buffers that contain mostly silence
 		if(np.asarray(np.where(indata_flattened > SILENCE_THRESHOLD)).size < SILENCE_RATIO):
 			continue
-		
 		if (global_ndarray is not None):
 			global_ndarray = np.concatenate((global_ndarray, indata), dtype='int16')
 		else:
 			global_ndarray = indata
 			
 		# concatenate buffers if the end of the current buffer is not silent
-		if (np.average((indata_flattened[-100:-1])) > SILENCE_THRESHOLD/15):
+		if (np.average((indata_flattened[-50:-1])) > SILENCE_THRESHOLD):
 			continue
 		else:
 			local_ndarray = global_ndarray.copy()
@@ -69,15 +65,13 @@ async def process_audio_buffer():
 
 
 async def main():
-	print('\nActivating wire ...\n')
-	audio_task = asyncio.create_task(process_audio_buffer())
-	while True:
-		await asyncio.sleep(1)
+	model = whisper.load_model(MODEL_TYPE)
+	print("Loaded whisper model.")
+	audio_task = asyncio.create_task(process_audio_buffer(model),name="audio_task")
+	print("Created audio_task. Waiting for its completion.")
+	await audio_task
 	audio_task.cancel()
-	try:
-		await audio_task
-	except asyncio.CancelledError:
-		print('\nwire was cancelled')
+	print("audio_task completed and canceled.")
 
 
 if __name__ == "__main__":
