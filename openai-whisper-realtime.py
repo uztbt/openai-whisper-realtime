@@ -3,11 +3,11 @@ import numpy as np
 import whisper
 import asyncio
 import sys
-
+import pyttsx3
 
 # SETTINGS
 # the model used for transcription. https://github.com/openai/whisper#available-models-and-languages
-MODEL_TYPE="tiny.en"
+MODEL_TYPE="base.en"
 # pre-set the language to avoid autodetection
 LANGUAGE="English"
 # Sample rate
@@ -36,7 +36,7 @@ async def inputstream_generator():
 			indata, status = await q_in.get()
 			yield indata, status
 
-async def process_audio_buffer(model):
+async def process_audio_buffer(model, tts_engine: pyttsx3.Engine):
 	global_ndarray = None
 	async for indata, status in inputstream_generator():
 
@@ -44,6 +44,7 @@ async def process_audio_buffer(model):
 
 		# discard buffers that contain mostly silence
 		if(np.asarray(np.where(indata_flattened > SILENCE_THRESHOLD)).size < SILENCE_RATIO):
+			# Maybe it's more prompt to run transcribing procedure here
 			continue
 		if (global_ndarray is not None):
 			global_ndarray = np.concatenate((global_ndarray, indata), dtype='int16')
@@ -58,16 +59,21 @@ async def process_audio_buffer(model):
 			global_ndarray = None
 			indata_transformed = local_ndarray.flatten().astype(np.float32) / 32768.0
 			result = model.transcribe(indata_transformed, language=LANGUAGE)
-			print(result["text"])
-			
+			execute_tts(tts_engine, result['text'])
 		del local_ndarray
 		del indata_flattened
+
+def execute_tts(engine: pyttsx3.Engine, text: str):
+	engine.say(text)
+	engine.runAndWait()
 
 
 async def main():
 	model = whisper.load_model(MODEL_TYPE)
+	tts_engine = pyttsx3.init()
+	tts_engine.setProperty('rate', 145)
 	print("Loaded whisper model.")
-	audio_task = asyncio.create_task(process_audio_buffer(model),name="audio_task")
+	audio_task = asyncio.create_task(process_audio_buffer(model, tts_engine),name="audio_task")
 	print("Created audio_task. Waiting for its completion.")
 	await audio_task
 	audio_task.cancel()
